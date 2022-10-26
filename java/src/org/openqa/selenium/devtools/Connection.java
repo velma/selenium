@@ -17,10 +17,7 @@
 
 package org.openqa.selenium.devtools;
 
-import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Multimap;
-
 import org.openqa.selenium.WebDriverException;
 import org.openqa.selenium.devtools.idealized.target.model.SessionID;
 import org.openqa.selenium.internal.Either;
@@ -35,13 +32,10 @@ import org.openqa.selenium.remote.http.WebSocket;
 import java.io.Closeable;
 import java.io.StringReader;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -68,7 +62,8 @@ public class Connection implements Closeable {
   private final WebSocket socket;
   private final Map<Long, Consumer<Either<Throwable, JsonInput>>> methodCallbacks = new ConcurrentHashMap<>();
   private final ReadWriteLock callbacksLock = new ReentrantReadWriteLock(true);
-  private final Multimap<Event<?>, Consumer<?>> eventCallbacks = HashMultimap.create();
+  private final Map<Event<?>, EventCallback> eventCallbacks = new HashMap<>();
+  private CompletableFuture<?> parserAsyncExecution = CompletableFuture.completedFuture(null);
 
   public Connection(HttpClient client, String url) {
     Require.nonNull("HTTP client", client);
@@ -169,7 +164,9 @@ public class Connection implements Closeable {
     Lock lock = callbacksLock.writeLock();
     lock.lock();
     try {
-      eventCallbacks.put(event, handler);
+      eventCallbacks
+        .computeIfAbsent(event, EventCallback::new)
+        .addConsumer(handler);
     } finally {
       lock.unlock();
     }
@@ -194,106 +191,129 @@ public class Connection implements Closeable {
 
     @Override
     public void onText(CharSequence data) {
+      parserAsyncExecution = parserAsyncExecution.thenRunAsync(() -> {
+        // It's kind of gross to decode the data twice, but this lets us get started on something
+        // that feels nice to users.
+        // TODO: decode once, and once only
+
+        String asString = String.valueOf(data);
+        LOG.log(getDebugLogLevel(), () -> String.format("<- %s", asString));
+
+        Map<String, Object> raw = JSON.toType(asString, MAP_TYPE);
+        if (raw.get("id") instanceof Number
+            && (raw.get("result") != null || raw.get("error") != null)) {
+
+          Consumer<Either<Throwable, JsonInput>> consumer = methodCallbacks.remove(((Number) raw.get("id")).longValue());
+          if (consumer != null) {
+            handleCommandAsync(consumer, asString);
+          }
+        } else if (raw.get("method") instanceof String && raw.get("params") instanceof Map) {
+          LOG.log(
+            getDebugLogLevel(),
+            String.format("Method %s called with %d callbacks available", raw.get("method"), eventCallbacks.keySet().size()));
+          Lock lock = callbacksLock.readLock();
+          lock.lock();
+          try {
+            // TODO: Also only decode once.
+            eventCallbacks.keySet().stream()
+              .peek(event -> LOG.log(
+                getDebugLogLevel(),
+                String.format("Matching %s with %s", raw.get("method"), event.getMethod())))
+              .filter(event -> raw.get("method").equals(event.getMethod()))
+              .forEach(event -> eventCallbacks.get(event).handleAsync(asString));
+          } finally {
+            lock.unlock();
+          }
+        } else {
+          LOG.warning("Unhandled type: " + data);
+        }
+      });
+    }
+
+    private void handleCommandAsync(Consumer<Either<Throwable, JsonInput>> consumer, String data) {
       EXECUTOR.execute(() -> {
-        try {
-          handle(data);
+        try (StringReader reader = new StringReader(data);
+             JsonInput input = JSON.newInput(reader)) {
+          input.beginObject();
+          while (input.hasNext()) {
+            switch (input.nextName()) {
+              case "result":
+                consumer.accept(Either.right(input));
+                break;
+
+              case "error":
+                consumer.accept(Either.left(new WebDriverException(data)));
+                input.skipValue();
+                break;
+
+              default:
+                input.skipValue();
+            }
+          }
+          input.endObject();
         } catch (Throwable t) {
           LOG.log(Level.WARNING, "Unable to process: " + data, t);
-          throw new DevToolsException(t);
+          consumer.accept(Either.left(new DevToolsException(t)));
         }
       });
     }
   }
 
-  private void handle(CharSequence data) {
-    // It's kind of gross to decode the data twice, but this lets us get started on something
-    // that feels nice to users.
-    // TODO: decode once, and once only
+  private static class EventCallback {
+    private final Event<?> event;
+    private final List<Consumer<?>> consumers = new CopyOnWriteArrayList<>();
+    private CompletableFuture<?> invocationQueue = CompletableFuture.completedFuture(null);
 
-    String asString = String.valueOf(data);
-    LOG.log(getDebugLogLevel(), () -> String.format("<- %s", asString));
+    public EventCallback(Event<?> event) {
+      this.event = event;
+    }
 
-    Map<String, Object> raw = JSON.toType(asString, MAP_TYPE);
-    if (raw.get("id") instanceof Number
-        && (raw.get("result") != null || raw.get("error") != null)) {
-      Consumer<Either<Throwable, JsonInput>> consumer = methodCallbacks.remove(((Number) raw.get("id")).longValue());
-      if (consumer == null) {
-        return;
-      }
+    public Event<?> getEvent() {
+      return event;
+    }
 
-      try (StringReader reader = new StringReader(asString);
-           JsonInput input = JSON.newInput(reader)) {
-        input.beginObject();
-        while (input.hasNext()) {
-          switch (input.nextName()) {
-            case "result":
-              consumer.accept(Either.right(input));
-              break;
+    public void addConsumer(Consumer<?> consumer) {
+      consumers.add(consumer);
+    }
 
-            case "error":
-              consumer.accept(Either.left(new WebDriverException(asString)));
-              input.skipValue();
-              break;
+    private void handleAsync(String data) {
+      invocationQueue = invocationQueue.thenRunAsync(() -> {
+        // TODO: This is grossly inefficient. I apologise, and we should fix this.
+        try (StringReader reader = new StringReader(data);
+             JsonInput input = JSON.newInput(reader)) {
+          Object value = null;
+          input.beginObject();
+          while (input.hasNext()) {
+            switch (input.nextName()) {
+              case "params":
+                value = event.getMapper().apply(input);
+                break;
 
-            default:
-              input.skipValue();
-          }
-        }
-        input.endObject();
-      }
-    } else if (raw.get("method") instanceof String && raw.get("params") instanceof Map) {
-      LOG.log(
-        getDebugLogLevel(),
-        String.format("Method %s called with %d callbacks available", raw.get("method"), eventCallbacks.keySet().size()));
-      Lock lock = callbacksLock.readLock();
-      lock.lock();
-      try {
-        // TODO: Also only decode once.
-        eventCallbacks.keySet().stream()
-          .peek(event -> LOG.log(
-            getDebugLogLevel(),
-            String.format("Matching %s with %s", raw.get("method"), event.getMethod())))
-          .filter(event -> raw.get("method").equals(event.getMethod()))
-          .forEach(event -> {
-            // TODO: This is grossly inefficient. I apologise, and we should fix this.
-            try (StringReader reader = new StringReader(asString);
-                 JsonInput input = JSON.newInput(reader)) {
-              Object value = null;
-              input.beginObject();
-              while (input.hasNext()) {
-                switch (input.nextName()) {
-                  case "params":
-                    value = event.getMapper().apply(input);
-                    break;
-
-                  default:
-                    input.skipValue();
-                    break;
-                }
-              }
-              input.endObject();
-
-              if (value == null) {
-                // Do nothing.
-                return;
-              }
-
-              final Object finalValue = value;
-
-              for (Consumer<?> action : eventCallbacks.get(event)) {
-                @SuppressWarnings("unchecked") Consumer<Object> obj = (Consumer<Object>) action;
-                LOG.log(
-                  getDebugLogLevel(),
-                  String.format("Calling callback for %s using %s being passed %s", event, obj, finalValue));
-                obj.accept(finalValue);
-              }
+              default:
+                input.skipValue();
+                break;
             }
+          }
+          input.endObject();
+
+          if (value == null) {
+            // Do nothing.
+            return;
+          }
+
+          final Object finalValue = value;
+
+          consumers.forEach(consumer -> {
+            @SuppressWarnings("unchecked") Consumer<Object> obj = (Consumer<Object>) consumer;
+            LOG.log(
+              getDebugLogLevel(),
+              String.format("Calling callback for %s using %s being passed %s", event, obj, finalValue));
+            obj.accept(finalValue);
           });
-      } finally {
-        lock.unlock();
-      }
-    } else {
-      LOG.warning("Unhandled type: " + data);
+        } catch (Throwable t) {
+          LOG.log(Level.WARNING, "Unable to process: " + data, t);
+        }
+      }, EXECUTOR);
     }
   }
 }
