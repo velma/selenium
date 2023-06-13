@@ -28,7 +28,7 @@ jobs:
       - name: Checkout source tree
         uses: actions/checkout@v2
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.7.10
       - name: Install dependencies
@@ -48,7 +48,7 @@ jobs:
       - name: Checkout source tree
         uses: actions/checkout@v2
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.7.10
       - name: Install dependencies
@@ -68,7 +68,7 @@ jobs:
       - name: Checkout source tree
         uses: actions/checkout@v2
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.7.9
       - name: Install dependencies
@@ -99,7 +99,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bazel-python-unit-tests-
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.7.10
       - name: Setup Java
@@ -131,7 +131,7 @@ jobs:
       - name: Setup Fluxbox
         run: sudo apt-get -y install fluxbox
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.7.10
       - name: Setup Chrome
@@ -168,7 +168,7 @@ jobs:
       - name: Setup Fluxbox
         run: sudo apt-get -y install fluxbox
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.7.10
       - name: Setup Java
@@ -211,7 +211,7 @@ jobs:
       - name: Setup Fluxbox
         run: sudo apt-get -y install fluxbox
       - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: 3.7.10
       - name: Setup Java
