@@ -30,7 +30,7 @@ jobs:
         target: [ 'selenium-devtools', 'selenium-webdriver' ]
     steps:
       - name: Checkout source tree
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Setup Java
         uses: actions/setup-java@v1
         with:
@@ -63,7 +63,7 @@ jobs:
         target: [ 'chrome-test', 'remote-chrome-test' ]
     steps:
       - name: Checkout source tree
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Setup Java
         uses: actions/setup-java@v1
         with:
@@ -107,7 +107,7 @@ jobs:
         target: [ 'firefox-test', 'remote-firefox-test' ]
     steps:
       - name: Checkout source tree
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Setup Java
         uses: actions/setup-java@v1
         with:
@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source tree
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -175,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source tree
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -204,7 +204,7 @@ jobs:
         ruby: [ '2.7', '3.1' ]
     steps:
       - name: Checkout source tree
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
